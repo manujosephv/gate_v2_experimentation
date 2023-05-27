@@ -16,3 +16,6 @@ pip install .
 cd ..
 echo "Installing Other Requirements"
 pip install -r requirements.txt
+
+git config --global user.email "manujosephv@gmail.com"
+git config --global user.name "Manu Joseph"
