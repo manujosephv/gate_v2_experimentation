@@ -153,3 +153,6 @@ docs/examples/basic/
 examples/test_save/
 .pt_tmp/
 .pt_tmp/exp_version_manager.yml
+study/
+output/
+
