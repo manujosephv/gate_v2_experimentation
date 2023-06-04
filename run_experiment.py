@@ -1,18 +1,13 @@
-import os
-import platform
-import sys
-import time
-import traceback  # Needed for pulling out your full stackframe info
 import uuid
 from pathlib import Path
 
+import joblib
 import numpy as np
 import torch
 from pytorch_tabular.config import DataConfig, OptimizerConfig, TrainerConfig
 from pytorch_tabular.models import GatedAdditiveTreeEnsembleConfig
 
-import wandb
-from src.train import *
+# from src.train import *
 from src.tuning import OptunaTuner
 
 # os.environ["WANDB_MODE"] = "offline"
@@ -22,17 +17,19 @@ DATA_DIR = Path("data")
 config = {
     "dataset": "compas-two-years",
     "n_trials": 100,
-    "batch_size":512,
-    "max_epochs":100,
-    "early_stopping_patience":10,
+    "batch_size": 512,
+    "max_epochs": 100,
+    "early_stopping_patience": 10,
     "optimizer": "AdamW",
+    "strategy": "tpe",
+    "pruning": False,
 }
 """
 
 
 def get_search_space(trial):
     space = {
-        "gflu_stages": trial.suggest_int("gflu_stages", 2, 15),
+        "gflu_stages": trial.suggest_int("gflu_stages", 2, 20),
         "gflu_dropout": trial.suggest_float("gflu_dropout", 0.0, 0.5),
         "num_trees": 0,
         # "feature_mask_function": trial.suggest_categorical(
@@ -40,7 +37,7 @@ def get_search_space(trial):
         # ),
         "feature_mask_function": "t-softmax",
         "optimizer_config__weight_decay": trial.suggest_categorical(
-            "optimizer_config__weight_decay", [1e-3, 1e-4, 1e-5, 1e-6]
+            "optimizer_config__weight_decay", [1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
         ),
         "head_config": {"layers": "32-16"},
         "learning_rate": trial.suggest_categorical(
@@ -69,19 +66,24 @@ def tune_model(config):
     d_config = np.load(d_config_files[0], allow_pickle=True).item()
     task = "classification" if d_config["regression"] == 0 else "regression"
     n_folds = len(d_config_files)
-    categorical_indicator = np.load(data_path / "categorical_indicator_fold_0.npy")
-    feat_names = [f"feature_{i}" for i in range(categorical_indicator.shape[0])]
-    cat_col_names = [
-        feat_names[i] for i in range(len(feat_names)) if categorical_indicator[i] == 1
-    ]
-    num_col_names = [
-        feat_names[i] for i in range(len(feat_names)) if categorical_indicator[i] == 0
-    ]
+    if d_config['data__categorical']==1:
+        categorical_indicator = np.load(data_path / "categorical_indicator_fold_0.npy", allow_pickle=True)
+        feat_names = [f"feature_{i}" for i in range(categorical_indicator.shape[0])]
+        cat_col_names = [
+            feat_names[i] for i in range(len(feat_names)) if categorical_indicator[i] == 1
+        ]
+        num_col_names = [
+            feat_names[i] for i in range(len(feat_names)) if categorical_indicator[i] == 0
+        ]
+    else:
+        n_features = np.load(data_path / "x_test_fold_0.npy", allow_pickle=True).shape[1]
+        cat_col_names = None
+        num_col_names = [f"feature_{i}" for i in range(n_features)]
     print(f"Using Data from: {data_path} for task: {task} with {n_folds} folds")
     data_config = DataConfig(
         target=["target"],
         continuous_cols=num_col_names,
-        categorical_cols=cat_col_names,
+        categorical_cols=cat_col_names or [],
         normalize_continuous_features=True,
     )
     trainer_config = TrainerConfig(
@@ -108,6 +110,7 @@ def tune_model(config):
         metrics_prob_input=[False] if task == "regression" else None,
     )
     model_id = uuid.uuid4().hex
+    study_name = f"{config['dataset']}_{model_id}"
     tuner = OptunaTuner(
         trainer_config=trainer_config,
         optimizer_config=optimizer_config,
@@ -117,10 +120,16 @@ def tune_model(config):
         direction="maximize",
         metric_name="test_r2_score" if task == "regression" else "test_accuracy",
         search_space_fn=get_search_space,
-        study_name=f"{config['dataset']}_{model_id}",
-        storage=f"sqlite:///study/{config['dataset']}_{model_id}.db",
+        study_name=study_name,
+        storage=f"sqlite:///study/{study_name}.db",
+        strategy=config["strategy"],
+        pruning=config["pruning"],
     )
-    best_params, best_value, study_df = tuner.tune(n_trials=100, n_jobs=1)
+    joblib.dump(config, f"study/config_{study_name}.pkl")
+
+    best_params, best_value, study_df = tuner.tune(
+        n_trials=config["n_trials"], n_jobs=1
+    )
     print(f"Best Parameters: {best_params}")
     print(f"Best Value: {best_value}")
     study_df.to_csv(f"output/study_{config['dataset']}_{model_id}.csv")
@@ -128,11 +137,13 @@ def tune_model(config):
 
 if __name__ == "__main__":
     config = {
-        "dataset": "compas-two-years",
+        "dataset": "wine_quality",
         "n_trials": 100,
-        "batch_size":512,
-        "max_epochs":100,
-        "early_stopping_patience":10,
+        "batch_size": 512,
+        "max_epochs": 100,
+        "early_stopping_patience": 10,
         "optimizer": "AdamW",
+        "strategy": "tpe",
+        "pruning": False,
     }
     tune_model(config)

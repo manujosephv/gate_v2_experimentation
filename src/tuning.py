@@ -1,12 +1,10 @@
-import optuna
 from copy import deepcopy
-import gc
-from pytorch_tabular import TabularModel
-import torch
-from optuna.integration import PyTorchLightningPruningCallback
+
 import numpy as np
+import optuna
 import pandas as pd
-import uuid
+# from optuna.integration import PyTorchLightningPruningCallback
+from pytorch_tabular import TabularModel
 
 
 def get_search_space(trial):
@@ -47,6 +45,7 @@ class OptunaTuner:
         metric_name,
         search_space_fn,
         pruning=True,
+        strategy="random",
         **kwargs,
     ):
         self.trainer_config = trainer_config
@@ -69,11 +68,12 @@ class OptunaTuner:
 
         kwargs["direction"] = direction
         kwargs["pruner"] = kwargs.get("pruner", pruner)
-        # kwargs["study_name"] = self._uuid
         kwargs["load_if_exists"] = True
-        kwargs["sampler"] = optuna.samplers.TPESampler(seed=42)
-        # kwargs["sampler"] = optuna.samplers.RandomSampler(seed=42)
-
+        kwargs["sampler"] = (
+            optuna.samplers.TPESampler(seed=42)
+            if strategy == "tpe"
+            else optuna.samplers.RandomSampler(seed=42)
+        )
         self.optuna_study_kwargs = kwargs
         self.study = optuna.create_study(**self.optuna_study_kwargs)
         self.n_fold = len(list(data_path.glob("*config*")))
@@ -84,7 +84,7 @@ class OptunaTuner:
         model_config_t = deepcopy(self.model_config)
 
         params = self.search_space_fn(trial)
-        print("Trial Params: {params}")
+        print(f"Trial Params: {params}")
         # Now set the parameters to the right config
         for name, param in params.items():
             if name.startswith("optimizer"):
@@ -94,12 +94,16 @@ class OptunaTuner:
 
         metrics = []
         for fold in range(self.n_fold):
-            x_train = np.load(self.data_path / f"x_train_fold_{fold}.npy")
-            y_train = np.load(self.data_path / f"y_train_fold_{fold}.npy").reshape(-1,1)
-            x_val = np.load(self.data_path / f"x_val_fold_{fold}.npy")
-            y_val = np.load(self.data_path / f"y_val_fold_{fold}.npy").reshape(-1,1)
-            x_test = np.load(self.data_path / f"x_train_fold_{fold}.npy")
-            y_test = np.load(self.data_path / f"y_train_fold_{fold}.npy").reshape(-1,1)
+            x_train = np.load(self.data_path / f"x_train_fold_{fold}.npy", allow_pickle=True)
+            y_train = np.load(self.data_path / f"y_train_fold_{fold}.npy", allow_pickle=True).reshape(
+                -1, 1
+            )
+            x_val = np.load(self.data_path / f"x_val_fold_{fold}.npy", allow_pickle=True)
+            y_val = np.load(self.data_path / f"y_val_fold_{fold}.npy", allow_pickle=True).reshape(-1, 1)
+            x_test = np.load(self.data_path / f"x_train_fold_{fold}.npy", allow_pickle=True)
+            y_test = np.load(self.data_path / f"y_train_fold_{fold}.npy", allow_pickle=True).reshape(
+                -1, 1
+            )
             # combine x and y into a dataframe
             train = pd.DataFrame(
                 np.concatenate([x_train, y_train], axis=1),
@@ -136,7 +140,7 @@ class OptunaTuner:
             #     gc.collect()
             #     torch.cuda.empty_cache()
             #     metrics.append(0 if self.direction == "maximize" else 1e6)
-        ret_metric =  np.nanmean(metrics)
+        ret_metric = np.nanmean(metrics)
         print("Trial Value: ", ret_metric)
         return ret_metric
 
