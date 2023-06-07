@@ -1,36 +1,17 @@
+import gc
 from copy import deepcopy
 
 import numpy as np
 import optuna
 import pandas as pd
+import requests
+import torch
+
 # from optuna.integration import PyTorchLightningPruningCallback
 from pytorch_tabular import TabularModel
 
-
-def get_search_space(trial):
-    space = {
-        "gflu_stages": trial.suggest_int("gflu_stages", 2, 10),
-        "gflu_dropout": trial.suggest_float("gflu_dropout", 0.0, 0.5),
-        "tree_depth": 0,
-        "feature_mask_function": trial.suggest_categorical(
-            "feature_mask_function", ["entmax", "sparsemax", "softmax", "t-softmax"]
-        ),
-        "optimizer_config__weight_decay": trial.suggest_categorical(
-            "optimizer_config__weight_decay", [1e-3, 1e-4, 1e-5, 1e-6]
-        ),
-        "head_config": {"layers": "32-16"},
-        "learning_rate": trial.suggest_categorical(
-            "learning_rate", [1e-3, 1e-4, 1e-5, 1e-6]
-        ),
-    }
-    if space["activation"] == "t-softmax":
-        space["gflu_feature_init_sparsity"] = trial.suggest_float(
-            "gflu_feature_init_sparsity", 0.0, 0.9
-        )
-        space["learnable_sparsity"] = trial.suggest_categorical(
-            "learnable_sparsity", [True, False]
-        )
-    return space
+TRAINING_UPDATE_TOKEN = "5189876982:AAH-0ff_kopHBJZYSqVdw5rt9dVy6xl-5iM"
+TELEGRAM_CHAT_ID = 790388072
 
 
 class OptunaTuner:
@@ -46,6 +27,7 @@ class OptunaTuner:
         search_space_fn,
         pruning=True,
         strategy="random",
+        notify_progress=True,
         **kwargs,
     ):
         self.trainer_config = trainer_config
@@ -57,6 +39,7 @@ class OptunaTuner:
         self.direction = direction
         self.metric_name = metric_name
         self.pruning = pruning
+        self.notify_progress = notify_progress
         pruner = (
             optuna.pruners.PercentilePruner(
                 percentile=75.0, n_startup_trials=10, n_warmup_steps=5
@@ -78,6 +61,17 @@ class OptunaTuner:
         self.study = optuna.create_study(**self.optuna_study_kwargs)
         self.n_fold = len(list(data_path.glob("*config*")))
 
+    def _notify_progress(self, trial, value):
+        try:
+            message = f"Trial {trial.number} finished with value: <b>{value:.5f}</b> and params: {trial.params}.\n\n"
+            if trial.number > 0:
+                message += f"<b>Best Trial</b>: {self.study.best_trial.number} with value: <b>{self.study.best_trial.value:.5f}</b> and params: {self.study.best_trial.params}"
+            requests.get(
+                f"https://api.telegram.org/bot{TRAINING_UPDATE_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={message}&parse_mode=html"
+            )
+        except Exception:
+            pass
+
     def objective(self, trial):
         trainer_config_t = deepcopy(self.trainer_config)
         optimizer_config_t = deepcopy(self.optimizer_config)
@@ -94,16 +88,24 @@ class OptunaTuner:
 
         metrics = []
         for fold in range(self.n_fold):
-            x_train = np.load(self.data_path / f"x_train_fold_{fold}.npy", allow_pickle=True)
-            y_train = np.load(self.data_path / f"y_train_fold_{fold}.npy", allow_pickle=True).reshape(
-                -1, 1
+            x_train = np.load(
+                self.data_path / f"x_train_fold_{fold}.npy", allow_pickle=True
             )
-            x_val = np.load(self.data_path / f"x_val_fold_{fold}.npy", allow_pickle=True)
-            y_val = np.load(self.data_path / f"y_val_fold_{fold}.npy", allow_pickle=True).reshape(-1, 1)
-            x_test = np.load(self.data_path / f"x_train_fold_{fold}.npy", allow_pickle=True)
-            y_test = np.load(self.data_path / f"y_train_fold_{fold}.npy", allow_pickle=True).reshape(
-                -1, 1
+            y_train = np.load(
+                self.data_path / f"y_train_fold_{fold}.npy", allow_pickle=True
+            ).reshape(-1, 1)
+            x_val = np.load(
+                self.data_path / f"x_val_fold_{fold}.npy", allow_pickle=True
             )
+            y_val = np.load(
+                self.data_path / f"y_val_fold_{fold}.npy", allow_pickle=True
+            ).reshape(-1, 1)
+            x_test = np.load(
+                self.data_path / f"x_train_fold_{fold}.npy", allow_pickle=True
+            )
+            y_test = np.load(
+                self.data_path / f"y_train_fold_{fold}.npy", allow_pickle=True
+            ).reshape(-1, 1)
             # combine x and y into a dataframe
             train = pd.DataFrame(
                 np.concatenate([x_train, y_train], axis=1),
@@ -125,23 +127,26 @@ class OptunaTuner:
                 optimizer_config=optimizer_config_t,
                 trainer_config=trainer_config_t,
             )
-            # try:
-            # Fit the model
-            tabular_model.fit(
-                train=train,
-                validation=val,
-                # callbacks=[
-                #     PyTorchLightningPruningCallback(trial, monitor="valid_loss")
-                # ],
-            )
-            result = tabular_model.evaluate(test, verbose=False)
-            metrics.append(result[0][self.metric_name])
-            # except RuntimeError as e:
-            #     gc.collect()
-            #     torch.cuda.empty_cache()
-            #     metrics.append(0 if self.direction == "maximize" else 1e6)
+            try:
+                # Fit the model
+                tabular_model.fit(
+                    train=train,
+                    validation=val,
+                    # callbacks=[
+                    #     PyTorchLightningPruningCallback(trial, monitor="valid_loss")
+                    # ],
+                )
+                result = tabular_model.evaluate(test, verbose=False)
+                metrics.append(result[0][self.metric_name])
+            except RuntimeError as e:
+                print(e)
+                gc.collect()
+                torch.cuda.empty_cache()
+                metrics.append(0 if self.direction == "maximize" else 1e6)
         ret_metric = np.nanmean(metrics)
         print("Trial Value: ", ret_metric)
+        if self.notify_progress:
+            self._notify_progress(trial, ret_metric)
         return ret_metric
 
     def tune(self, n_trials, timeout=None, n_jobs=1):

@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+import requests
 
 import joblib
 import numpy as np
@@ -12,6 +13,8 @@ from src.tuning import OptunaTuner
 
 # os.environ["WANDB_MODE"] = "offline"
 DATA_DIR = Path("data")
+TRAINING_DONE_TOKEN = "6069721026:AAG5mDHXLhRKjFOwNrhsz0KMxTus9S9uV24"
+TELEGRAM_CHAT_ID = 790388072
 
 """
 config = {
@@ -27,9 +30,23 @@ config = {
 """
 
 
+def clean_up_folder(folder):
+    # check if folder is str then make it Path
+    if isinstance(folder, str):
+        folder = Path(folder)
+    # check if folder exists
+    if not folder.exists():
+        print(f"{folder} does not exist")
+        return
+    for f in folder.glob("*"):
+        if f.is_dir():
+            clean_up_folder(f)
+        else:
+            f.unlink()
+
 def get_search_space(trial):
     space = {
-        "gflu_stages": trial.suggest_int("gflu_stages", 2, 20),
+        "gflu_stages": trial.suggest_int("gflu_stages", 2, 30),
         "gflu_dropout": trial.suggest_float("gflu_dropout", 0.0, 0.5),
         "num_trees": 0,
         # "feature_mask_function": trial.suggest_categorical(
@@ -54,6 +71,15 @@ def get_search_space(trial):
     return space
 
 
+def notify_telegram(message):
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{TRAINING_DONE_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={message}&parse_mode=html"
+        )
+    except Exception as e:
+        raise e
+
+
 def tune_model(config):
     print("GPU?")
     print(torch.cuda.device_count())
@@ -66,20 +92,31 @@ def tune_model(config):
     d_config = np.load(d_config_files[0], allow_pickle=True).item()
     task = "classification" if d_config["regression"] == 0 else "regression"
     n_folds = len(d_config_files)
-    if d_config['data__categorical']==1:
-        categorical_indicator = np.load(data_path / "categorical_indicator_fold_0.npy", allow_pickle=True)
+    if d_config.get("data__categorical",0) == 1:
+        categorical_indicator = np.load(
+            data_path / "categorical_indicator_fold_0.npy", allow_pickle=True
+        )
         feat_names = [f"feature_{i}" for i in range(categorical_indicator.shape[0])]
         cat_col_names = [
-            feat_names[i] for i in range(len(feat_names)) if categorical_indicator[i] == 1
+            feat_names[i]
+            for i in range(len(feat_names))
+            if categorical_indicator[i] == 1
         ]
         num_col_names = [
-            feat_names[i] for i in range(len(feat_names)) if categorical_indicator[i] == 0
+            feat_names[i]
+            for i in range(len(feat_names))
+            if categorical_indicator[i] == 0
         ]
     else:
-        n_features = np.load(data_path / "x_test_fold_0.npy", allow_pickle=True).shape[1]
+        n_features = np.load(
+            data_path / "x_test_fold_0.npy", allow_pickle=True
+        ).shape[1]
         cat_col_names = None
         num_col_names = [f"feature_{i}" for i in range(n_features)]
     print(f"Using Data from: {data_path} for task: {task} with {n_folds} folds")
+    notify_telegram(
+        f"Start Tuning for data: <b>{config['dataset']}</b> for task: {task} with <b>{n_folds}</b> folds."
+    )
     data_config = DataConfig(
         target=["target"],
         continuous_cols=num_col_names,
@@ -124,6 +161,7 @@ def tune_model(config):
         storage=f"sqlite:///study/{study_name}.db",
         strategy=config["strategy"],
         pruning=config["pruning"],
+        notify_progress=True,
     )
     joblib.dump(config, f"study/config_{study_name}.pkl")
 
@@ -132,12 +170,78 @@ def tune_model(config):
     )
     print(f"Best Parameters: {best_params}")
     print(f"Best Value: {best_value}")
+    notify_telegram(
+        f"Tuning complete for data from: <b>{data_path}</b> for task: <b>{task}</b> with <b>{n_folds}</b> folds."
+        f"Best Value: <b>{best_value:.5f}</b>\n\nBest Parameters: {best_params}\nStudy Name: {study_name}"
+    )
     study_df.to_csv(f"output/study_{config['dataset']}_{model_id}.csv")
+    clean_up_folder("saved_models")
 
 
 if __name__ == "__main__":
+    # config = {
+    #     "dataset": "Brazilian_houses",
+    #     "n_trials": 100,
+    #     "batch_size": 512,
+    #     "max_epochs": 100,
+    #     "early_stopping_patience": 10,
+    #     "optimizer": "AdamW",
+    #     "strategy": "tpe",
+    #     "pruning": False,
+    # }
+    # tune_model(config)
+
+    # config = {
+    #     "dataset": "wine_quality",
+    #     "n_trials": 100,
+    #     "batch_size": 512,
+    #     "max_epochs": 100,
+    #     "early_stopping_patience": 10,
+    #     "optimizer": "AdamW",
+    #     "strategy": "tpe",
+    #     "pruning": False,
+    # }
+
+    # tune_model(config)
+
+    # config = {
+    #     "dataset": "sulfur",
+    #     "n_trials": 100,
+    #     "batch_size": 512,
+    #     "max_epochs": 100,
+    #     "early_stopping_patience": 10,
+    #     "optimizer": "AdamW",
+    #     "strategy": "tpe",
+    #     "pruning": False,
+    # }
+    # tune_model(config)
+
+    # config = {
+    #     "dataset": "visualizing_soil",
+    #     "n_trials": 100,
+    #     "batch_size": 512,
+    #     "max_epochs": 100,
+    #     "early_stopping_patience": 10,
+    #     "optimizer": "AdamW",
+    #     "strategy": "tpe",
+    #     "pruning": False,
+    # }
+    # tune_model(config)
+
+    # config = {
+    #     "dataset": "medical_charges",
+    #     "n_trials": 100,
+    #     "batch_size": 512,
+    #     "max_epochs": 100,
+    #     "early_stopping_patience": 10,
+    #     "optimizer": "AdamW",
+    #     "strategy": "tpe",
+    #     "pruning": False,
+    # }
+    # tune_model(config)
+
     config = {
-        "dataset": "wine_quality",
+        "dataset": "abalone",
         "n_trials": 100,
         "batch_size": 512,
         "max_epochs": 100,
@@ -146,4 +250,7 @@ if __name__ == "__main__":
         "strategy": "tpe",
         "pruning": False,
     }
-    tune_model(config)
+    for col in ['superconduct', 'covertype', 'Higgs']:
+        config["dataset"] = col
+
+        tune_model(config)
