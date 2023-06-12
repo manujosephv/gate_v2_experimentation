@@ -250,7 +250,7 @@ if __name__ == "__main__":
         "strategy": "tpe",
         "pruning": False,
     }
-    for col in ['yprop_4_1', 'cpu_act']:
+    for col in ['Ailerons']:
         config["dataset"] = col
 
         tune_model(config)

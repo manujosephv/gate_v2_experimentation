@@ -129,13 +129,24 @@ class OptunaTuner:
             )
             try:
                 # Fit the model
-                tabular_model.fit(
-                    train=train,
-                    validation=val,
-                    # callbacks=[
-                    #     PyTorchLightningPruningCallback(trial, monitor="valid_loss")
-                    # ],
-                )
+                if self.study.study_name.startswith("Ailerons"):
+                    # Need special transformation to target to avoid gradient underflow
+                    tabular_model.fit(
+                        train=train,
+                        validation=val,
+                        target_transform=(lambda x: x*1000, lambda x: x/1000)
+                        # callbacks=[
+                        #     PyTorchLightningPruningCallback(trial, monitor="valid_loss")
+                        # ],
+                    )
+                else:
+                    tabular_model.fit(
+                        train=train,
+                        validation=val,
+                        # callbacks=[
+                        #     PyTorchLightningPruningCallback(trial, monitor="valid_loss")
+                        # ],
+                    )
                 result = tabular_model.evaluate(test, verbose=False)
                 metrics.append(result[0][self.metric_name])
             except RuntimeError as e:
